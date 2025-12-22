@@ -58,8 +58,10 @@ jobs:
         print(f"Output saved to: {output_file}")
         EOF
         
-    - name: Upload deduplicated file
-      uses: actions/upload-artifact@v4
-      with:
-        name: deduplicated-flashcards
-        path: kimshim_deduplicated.txt
+    - name: Commit deduplicated file
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add kimshim_deduplicated.txt
+        git commit -m "Add deduplicated flashcards" || echo "No changes to commit"
+        git push
