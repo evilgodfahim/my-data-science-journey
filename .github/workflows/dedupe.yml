@@ -1,10 +1,10 @@
-name: Remove Duplicate Flashcards
+name: Merge and Deduplicate Flashcards
 
 on:
   workflow_dispatch:
 
 jobs:
-  deduplicate:
+  merge-and-deduplicate:
     runs-on: ubuntu-latest
     
     steps:
@@ -16,52 +16,59 @@ jobs:
       with:
         python-version: '3.11'
         
-    - name: Run deduplication script
+    - name: Merge and deduplicate
       run: |
         python - <<'EOF'
         import csv
 
-        # Input and output file paths
-        input_file = 'kimshim.txt'
-        output_file = 'kimshim_deduplicated.txt'
+        # Input files and output file
+        input_files = ['kimshim.txt', 'kim.txt']
+        output_file = 'kimshim.txt'
 
         # Track seen fronts and store unique rows
         seen_fronts = set()
         unique_rows = []
+        header = None
 
-        # Read the CSV file
-        with open(input_file, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            
-            # Read header
-            header = next(reader)
-            unique_rows.append(header)
-            
-            # Process each row
-            for row in reader:
-                if len(row) >= 2:
-                    front = row[0]
+        # Read all input files
+        for input_file in input_files:
+            try:
+                with open(input_file, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
                     
-                    # Only keep first occurrence of each front
-                    if front not in seen_fronts:
-                        seen_fronts.add(front)
-                        unique_rows.append(row)
+                    # Read header from first file only
+                    file_header = next(reader)
+                    if header is None:
+                        header = file_header
+                        unique_rows.append(header)
+                    
+                    # Process each row
+                    for row in reader:
+                        if len(row) >= 2:
+                            front = row[0]
+                            
+                            # Only keep first occurrence of each front
+                            if front not in seen_fronts:
+                                seen_fronts.add(front)
+                                unique_rows.append(row)
+                                
+                print(f"Processed {input_file}: added rows")
+            except FileNotFoundError:
+                print(f"Warning: {input_file} not found, skipping...")
 
         # Write to output file with preserved CSV format
         with open(output_file, 'w', encoding='utf-8', newline='') as f:
             writer = csv.writer(f)
             writer.writerows(unique_rows)
 
-        print(f"Original rows: {len(unique_rows) - 1 + len(seen_fronts)}")
-        print(f"Unique rows: {len(unique_rows) - 1}")
-        print(f"Duplicates removed: {len(seen_fronts) - (len(unique_rows) - 1)}")
+        print(f"\nTotal unique flashcards: {len(unique_rows) - 1}")
         print(f"Output saved to: {output_file}")
         EOF
         
-    - name: Commit deduplicated file
+    - name: Commit merged file
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git add kimshim_deduplicated.txt
-        git commit -m "Add deduplicated flashcards" || echo "No changes to commit"
+        git add kimshim.txt
+        git commit -m "Merge kim.txt into kimshim.txt and deduplicate" || echo "No changes to commit"
         git push
