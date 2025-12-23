@@ -13,7 +13,7 @@ unique_rows = []
 with open(input_file, 'r', encoding='utf-8') as f:
     reader = csv.reader(f)
     
-    # Process each row (no header in this format)
+    # Process each row (no header)
     for row in reader:
         if len(row) >= 2:
             front = row[0]
@@ -23,7 +23,7 @@ with open(input_file, 'r', encoding='utf-8') as f:
                 seen_fronts.add(front)
                 unique_rows.append(row)
 
-# Write to output file with preserved CSV format
+# Write to temp file
 with open(output_file, 'w', encoding='utf-8', newline='') as f:
     writer = csv.writer(f)
     writer.writerows(unique_rows)
@@ -31,8 +31,7 @@ with open(output_file, 'w', encoding='utf-8', newline='') as f:
 print(f"Total rows processed: {len(seen_fronts)}")
 print(f"Unique rows kept: {len(unique_rows)}")
 print(f"Duplicates removed: {len(seen_fronts) - len(unique_rows)}")
-print(f"Output saved to: {output_file}")
 
 # Replace original file with deduplicated version
 os.replace(output_file, input_file)
-print(f"Replaced {input_file} with deduplicated version")
+print(f"Successfully deduplicated {input_file}")
