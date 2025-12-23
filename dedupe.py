@@ -1,8 +1,8 @@
 import csv
 
 # Input and output file paths
-input_file = 'kimshim.txt'
-output_file = 'kimshim_deduplicated.txt'
+input_file = 'oneworde.txt'
+output_file = 'oneworde_deduplicated.txt'
 
 # Track seen fronts and store unique rows
 seen_fronts = set()
@@ -12,11 +12,7 @@ unique_rows = []
 with open(input_file, 'r', encoding='utf-8') as f:
     reader = csv.reader(f)
     
-    # Read header
-    header = next(reader)
-    unique_rows.append(header)
-    
-    # Process each row
+    # Process each row (no header in this format)
     for row in reader:
         if len(row) >= 2:
             front = row[0]
@@ -31,7 +27,7 @@ with open(output_file, 'w', encoding='utf-8', newline='') as f:
     writer = csv.writer(f)
     writer.writerows(unique_rows)
 
-print(f"Original rows: {len(unique_rows) - 1 + len(seen_fronts)}")
-print(f"Unique rows: {len(unique_rows) - 1}")
-print(f"Duplicates removed: {len(seen_fronts) - (len(unique_rows) - 1)}")
+print(f"Total rows processed: {len(seen_fronts)}")
+print(f"Unique rows kept: {len(unique_rows)}")
+print(f"Duplicates removed: {len(seen_fronts) - len(unique_rows)}")
 print(f"Output saved to: {output_file}")
