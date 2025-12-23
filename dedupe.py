@@ -1,8 +1,9 @@
 import csv
+import os
 
 # Input and output file paths
 input_file = 'oneworde.txt'
-output_file = 'oneworde_deduplicated.txt'
+output_file = 'oneworde_temp.txt'
 
 # Track seen fronts and store unique rows
 seen_fronts = set()
@@ -31,3 +32,7 @@ print(f"Total rows processed: {len(seen_fronts)}")
 print(f"Unique rows kept: {len(unique_rows)}")
 print(f"Duplicates removed: {len(seen_fronts) - len(unique_rows)}")
 print(f"Output saved to: {output_file}")
+
+# Replace original file with deduplicated version
+os.replace(output_file, input_file)
+print(f"Replaced {input_file} with deduplicated version")
