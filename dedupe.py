@@ -2,7 +2,7 @@ import csv
 import os
 
 # Input and output file paths
-input_file = 'bs.txt'
+input_file = 'in.txt'
 output_file = 'oneworde_temp.txt'
 
 # Track seen fronts and store unique rows
