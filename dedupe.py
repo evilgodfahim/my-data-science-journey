@@ -2,7 +2,7 @@ import csv
 import os
 
 # Input and output file paths
-input_file = 'front.txt'
+input_file = 'bs.txt'
 output_file = 'oneworde_temp.txt'
 
 # Track seen fronts and store unique rows
@@ -16,7 +16,8 @@ with open(input_file, 'r', encoding='utf-8') as f:
     # Process each row (no header)
     for row in reader:
         if len(row) >= 2:
-            front = row[0]
+            # Strip whitespace from the first field
+            front = row[0].strip()
             
             # Only keep first occurrence of each front
             if front not in seen_fronts:
