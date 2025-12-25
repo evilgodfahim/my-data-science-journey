@@ -2,16 +2,16 @@ import csv
 import os
 
 # Input and output file paths
-input_file = 'in.txt'
+input_file = 'an.txt'
 output_file = 'oneworde_temp.txt'
 
 # Track seen fronts and store unique rows
 seen_fronts = set()
 unique_rows = []
 
-# Read the CSV file (tab-separated)
+# Read the CSV file
 with open(input_file, 'r', encoding='utf-8') as f:
-    reader = csv.reader(f, delimiter='\t')
+    reader = csv.reader(f)
     
     # Process each row (no header)
     for row in reader:
@@ -24,7 +24,7 @@ with open(input_file, 'r', encoding='utf-8') as f:
                 seen_fronts.add(front)
                 unique_rows.append(row)
 
-# Write to temp file (comma-separated)
+# Write to temp file
 with open(output_file, 'w', encoding='utf-8', newline='') as f:
     writer = csv.writer(f)
     writer.writerows(unique_rows)
