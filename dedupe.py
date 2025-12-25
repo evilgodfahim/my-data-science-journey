@@ -9,9 +9,9 @@ output_file = 'oneworde_temp.txt'
 seen_fronts = set()
 unique_rows = []
 
-# Read the CSV file
+# Read the CSV file (tab-separated)
 with open(input_file, 'r', encoding='utf-8') as f:
-    reader = csv.reader(f)
+    reader = csv.reader(f, delimiter='\t')
     
     # Process each row (no header)
     for row in reader:
@@ -24,7 +24,7 @@ with open(input_file, 'r', encoding='utf-8') as f:
                 seen_fronts.add(front)
                 unique_rows.append(row)
 
-# Write to temp file
+# Write to temp file (comma-separated)
 with open(output_file, 'w', encoding='utf-8', newline='') as f:
     writer = csv.writer(f)
     writer.writerows(unique_rows)
