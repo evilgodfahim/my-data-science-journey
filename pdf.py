@@ -18,7 +18,7 @@ C_DARK   = colors.HexColor('#2c3e50')   # near-black text
 W, H = A4
 
 doc = SimpleDocTemplate(
-    'Finance_Banking_BD_Bank_Exam_MasterNotes.pdf ',
+    'Finance_Banking_BD_Bank_Exam_MasterNotes.pdf',
     pagesize=A4,
     leftMargin=1.8*cm, rightMargin=1.8*cm,
     topMargin=2*cm,    bottomMargin=2*cm,
