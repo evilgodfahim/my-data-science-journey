@@ -38,11 +38,11 @@ COVER_BODY  = S('CoverBody',  fontName='Helvetica', fontSize=11,
                 textColor=C_DARK, alignment=TA_CENTER, spaceAfter=4)
 
 CHAP  = S('Chap',  fontName='Helvetica-Bold', fontSize=15, textColor=colors.white,
-          alignment=TA_LEFT, spaceAfter=4, spaceBefore=8, leading=18)
+          alignment=TA_LEFT, spaceAfter=4, spaceBefore=8, leading=18, keepWithNext=True)
 SEC   = S('Sec',   fontName='Helvetica-Bold', fontSize=11, textColor=C_SUB,
-          spaceAfter=3, spaceBefore=6, leading=14)
+          spaceAfter=3, spaceBefore=6, leading=14, keepWithNext=True)
 SSEC  = S('SSec',  fontName='Helvetica-Bold', fontSize=10, textColor=C_KEY,
-          spaceAfter=2, spaceBefore=4, leading=13)
+          spaceAfter=2, spaceBefore=4, leading=13, keepWithNext=True)
 BODY  = S('Body',  fontName='Helvetica', fontSize=8.5, textColor=C_DARK,
           spaceAfter=3, leading=12, alignment=TA_JUSTIFY)
 BULL  = S('Bull',  fontName='Helvetica', fontSize=8.5, textColor=C_DARK,
