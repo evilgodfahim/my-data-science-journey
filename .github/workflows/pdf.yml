@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Check out your repository code so the runner can access pdf.py
+      # Step 1: Check out your repository code
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -23,14 +23,18 @@ jobs:
       - name: Install dependencies
         run: pip install reportlab
 
-      # Step 4: Run your Python script
+      # Step 4: Run the auto-fixer first to patch syntax errors in pdf.py
+      - name: Auto-fix Syntax Errors
+        run: python auto_fix.py
+
+      # Step 5: Run your now-fixed Python script
       - name: Run pdf.py
         run: python pdf.py
 
-      # Step 5: Upload the generated PDF so you can download it
+      # Step 6: Upload the generated PDF so you can download it
       - name: Upload PDF Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Generated-PDF
-          # This grabs any PDF file created in the main directory
+          # This grabs any PDF file created during the workflow run
           path: '*.pdf'
