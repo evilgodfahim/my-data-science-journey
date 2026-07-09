@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64, os, re, sys, time
+import email.utils
 import requests
 from nacl import encoding, public
 
@@ -22,7 +23,7 @@ def log(msg):
     print(msg, flush=True)
 
 def github_request(method, url, **kwargs):
-    """Wrapper to safely handle network drops, timeouts, and GitHub rate limits."""
+    """Wrapper to safely handle network drops, timeouts, and precise GitHub rate limits."""
     timeout = kwargs.pop("timeout", 30)
     headers = kwargs.pop("headers", HEADERS)
     retries = 3
@@ -30,12 +31,36 @@ def github_request(method, url, **kwargs):
     while retries > 0:
         try:
             r = requests.request(method, url, timeout=timeout, headers=headers, **kwargs)
-            if r.status_code in (403, 429) and "X-RateLimit-Reset" in r.headers:
-                reset_time = int(r.headers.get("X-RateLimit-Reset", time.time() + 60))
-                wait = max(reset_time - time.time(), 5)
-                log(f"  [API Limit] Rate limit hit. Waiting {wait:.0f}s before continuing...")
-                time.sleep(wait)
-                continue
+            
+            if r.status_code in (403, 429):
+                retry_after = r.headers.get("Retry-After") or r.headers.get("retry-after")
+                if retry_after:
+                    wait = int(retry_after)
+                    log(f"  [API Limit] Anti-abuse rate limit hit. Waiting Retry-After: {wait}s...")
+                    time.sleep(wait)
+                    continue
+                
+                if "X-RateLimit-Reset" in r.headers:
+                    reset_timestamp = int(r.headers["X-RateLimit-Reset"])
+                    server_date = r.headers.get("Date")
+                    if server_date:
+                        try:
+                            server_time = email.utils.parsedate_to_datetime(server_date).timestamp()
+                        except Exception:
+                            server_time = time.time()
+                    else:
+                        server_time = time.time()
+                    
+                    wait = max(int(reset_timestamp - server_time) + 2, 5)
+                    
+                    if wait > 300:
+                        log(f"  [API Limit] Primary rate limit reset window is too far out ({wait}s).")
+                        log("  Exiting gracefully to avoid hanging the runner. Please re-run later.")
+                        sys.exit(0)
+                        
+                    log(f"  [API Limit] Primary limit hit. Waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
             
             r.raise_for_status()
             return r
@@ -78,26 +103,50 @@ def trawl_steps(indent):
     )
 
 def patch_workflow(content):
-    # FIXED: Replaced unsafe regex with a fast, linear string parser for the services block
-    in_services = False
-    for line in content.splitlines():
-        if line.strip().startswith('services:'):
-            in_services = True
-        elif in_services and line.strip() and not line.startswith(' ') and not line.startswith('\t'):
-            in_services = False
-        if in_services and 'byparr:' in line:
-            log("    ⚠  Contains a 'services:' block — needs manual conversion")
-            break
-
     lines = content.split('\n')
     result = []
     i = 0
     changed = False
     while i < len(lines):
         line = lines[i]
-        m = re.match(r'^(\s+)-\s+name:', line)
-        if m:
-            indent = m.group(1)
+        
+        # 1. AUTOMATED CONVERSION: Job-Level Services Block
+        m_svc = re.match(r'^(\s+)byparr:\s*$', line)
+        if m_svc:
+            indent = m_svc.group(1)
+            j = i + 1
+            while j < len(lines):
+                if lines[j].strip() and not lines[j].startswith(indent + ' '):
+                    break
+                j += 1
+            
+            # Injecting synchronized container network configuration for Redis + Trawl sidecars
+            svc_replacement = (
+                f"{indent}redis:\n"
+                f"{indent}  image: redis:alpine\n"
+                f"{indent}  options: >-\n"
+                f"{indent}    --health-cmd \"redis-cli ping\"\n"
+                f"{indent}    --health-interval 10s\n"
+                f"{indent}    --health-timeout 5s\n"
+                f"{indent}    --health-retries 5\n"
+                f"{indent}trawl:\n"
+                f"{indent}  image: ghcr.io/germondai/trawl:latest\n"
+                f"{indent}  ports:\n"
+                f"{indent}    - 8191:8191\n"
+                f"{indent}  env:\n"
+                f"{indent}    REDIS_URL: redis://redis:6379\n"
+                f"{indent}    BROWSER_POOL_SIZE: 2\n"
+                f"{indent}    RESIDENTIAL_PROXY_URL: ${{{{ secrets.WEBSHARE_PROXY_URL }}}}"
+            )
+            result.append(svc_replacement)
+            changed = True
+            i = j
+            continue
+
+        # 2. Step-Level Blocks
+        m_step = re.match(r'^(\s+)-\s+name:', line)
+        if m_step:
+            indent = m_step.group(1)
             step_lines = [line]
             j = i + 1
             while j < len(lines):
@@ -119,36 +168,42 @@ def patch_workflow(content):
                         peek.append(nxt)
                         k += 1
                     peek_text = '\n'.join(peek)
-                    # FIXED: Replaced generic \s with explicit horizontal spacing [ \t] and explicit line breaks to eliminate backtracking hangs
                     if (re.search(r'run:[ \t]*\|?[ \t]*\n(?:[ \t]*\r?\n)*[ \t]*sleep[ \t]+\d+', peek_text, re.IGNORECASE)
                             and not re.search(r'docker|python|pip|git|curl|npm|node|wget', peek_text, re.IGNORECASE)):
                         j = k
                 i = j
                 continue
+
+        # 3. Step/Script Reference Updates (Changes down-stream hostname tasks from byparr -> trawl)
         if 'byparr' in line.lower():
             new_line = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', line)
             new_line = re.sub(r'--name\s+byparr\b', '--name trawl', new_line)
             new_line = new_line.replace('docker logs byparr', 'docker logs trawl')
+            new_line = re.sub(r'\bbyparr\b', 'trawl', new_line, flags=re.IGNORECASE)
             if new_line != line:
                 line = new_line
                 changed = True
+
         result.append(line)
         i += 1
+        
     return '\n'.join(result), changed
 
 def patch_compose(content):
     new = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
-    new = re.sub(r'(container_name:\s*)byparr', r'\1trawl', new)
-    new = re.sub(r'^(\s*)byparr(\s*:)', r'\1trawl\2', new, flags=re.MULTILINE)
-    new = re.sub(r'--name\s+byparr\b', '--name trawl', new)
+    new = re.sub(r'(container_name:\s*)byparr', r'\1trawl', new, flags=re.IGNORECASE)
+    new = re.sub(r'^(\s*)byparr(\s*:)', r'\1trawl\2', new, flags=re.MULTILINE | re.IGNORECASE)
+    new = re.sub(r'--name\s+byparr\b', '--name trawl', new, flags=re.IGNORECASE)
+    new = re.sub(r'\bbyparr\b', 'trawl', new, flags=re.IGNORECASE)
     if new != content:
         log("    ⚠  docker-compose: updated but Redis must be added manually")
     return new, new != content
 
 def patch_other(content):
     new = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
-    new = re.sub(r'--name\s+byparr\b', '--name trawl', new)
+    new = re.sub(r'--name\s+byparr\b', '--name trawl', new, flags=re.IGNORECASE)
     new = new.replace('docker logs byparr', 'docker logs trawl')
+    new = re.sub(r'\bbyparr\b', 'trawl', new, flags=re.IGNORECASE)
     return new, new != content
 
 def patch(content, path):
@@ -234,7 +289,6 @@ for item in items:
         log(f"  [SKIP] {key}  (doc file)")
         continue
 
-    # FIXED: Skip the migration script file itself to protect runtime integrity
     if "migrate_all.py" in path.lower():
         log(f"  [SKIP] {key}  (migration script self-exclusion)")
         continue
@@ -282,7 +336,7 @@ for repo in all_repos:
     except Exception as e:
         log(f"   [✗] {repo}: {e}")
         s_fail.append(repo)
-    time.sleep(0.3)
+    time.sleep(1.2)
 
 log(f"\nSecrets set: {len(s_ok)}  Failed: {len(s_fail)}")
 log("\n══════════════════════════════════════════════════════════════════════")
