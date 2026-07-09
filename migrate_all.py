@@ -53,12 +53,12 @@ def github_request(method, url, **kwargs):
                     
                     wait = max(int(reset_timestamp - server_time) + 2, 5)
                     
-                    if wait > 300:
-                        log(f"  [API Limit] Primary rate limit reset window is too far out ({wait}s).")
-                        log("  Exiting gracefully to avoid hanging the runner. Please re-run later.")
+                    # Raised limit to allow full automated completion over long CI windows
+                    if wait > 3600:
+                        log(f"  [API Limit] Rate limit reset window is exceptionally long ({wait}s). Exiting.")
                         sys.exit(0)
                         
-                    log(f"  [API Limit] Primary limit hit. Waiting {wait}s...")
+                    log(f"  [API Limit] Primary limit hit. Sleeping for {wait}s to fully complete migration...")
                     time.sleep(wait)
                     continue
             
@@ -103,6 +103,10 @@ def trawl_steps(indent):
     )
 
 def patch_workflow(content):
+    # Self-healing check: if it already uses trawl and contains redis, it's fully migrated
+    if 'trawl' in content.lower() and 'redis' in content.lower():
+        return content, False
+
     lines = content.split('\n')
     result = []
     i = 0
@@ -110,8 +114,8 @@ def patch_workflow(content):
     while i < len(lines):
         line = lines[i]
         
-        # 1. AUTOMATED CONVERSION: Job-Level Services Block
-        m_svc = re.match(r'^(\s+)byparr:\s*$', line)
+        # Matches either old 'byparr:' or broken/half-migrated 'trawl:' blocks under services
+        m_svc = re.match(r'^(\s+)(byparr|trawl):\s*$', line)
         if m_svc:
             indent = m_svc.group(1)
             j = i + 1
@@ -120,7 +124,6 @@ def patch_workflow(content):
                     break
                 j += 1
             
-            # Injecting synchronized container network configuration for Redis + Trawl sidecars
             svc_replacement = (
                 f"{indent}redis:\n"
                 f"{indent}  image: redis:alpine\n"
@@ -143,7 +146,7 @@ def patch_workflow(content):
             i = j
             continue
 
-        # 2. Step-Level Blocks
+        # Step-Level blocks
         m_step = re.match(r'^(\s+)-\s+name:', line)
         if m_step:
             indent = m_step.group(1)
@@ -156,7 +159,7 @@ def patch_workflow(content):
                 step_lines.append(nxt)
                 j += 1
             step_text = '\n'.join(step_lines)
-            if IMAGE_RE.search(step_text):
+            if IMAGE_RE.search(step_text) or ('docker run' in step_text and 'byparr' in step_text):
                 result.append(trawl_steps(indent))
                 changed = True
                 if j < len(lines) and re.match(rf'^{re.escape(indent)}-\s+name:', lines[j]):
@@ -174,10 +177,10 @@ def patch_workflow(content):
                 i = j
                 continue
 
-        # 3. Step/Script Reference Updates (Changes down-stream hostname tasks from byparr -> trawl)
+        # Dynamic string replacement for leftovers
         if 'byparr' in line.lower():
             new_line = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', line)
-            new_line = re.sub(r'--name\s+byparr\b', '--name trawl', new_line)
+            new_line = re.sub(r'--name\s+byparr\b', '--name trawl', new_line, flags=re.IGNORECASE)
             new_line = new_line.replace('docker logs byparr', 'docker logs trawl')
             new_line = re.sub(r'\bbyparr\b', 'trawl', new_line, flags=re.IGNORECASE)
             if new_line != line:
@@ -228,15 +231,24 @@ def get_all_repos():
 
 def search_files():
     results, page = [], 1
-    while True:
-        log(f"  Searching page {page}...")
-        r = github_request("GET", "https://api.github.com/search/code", params={"q": f"byparr user:{OWNER}", "per_page": 100, "page": page})
-        batch = r.json().get("items", [])
-        results.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
-        time.sleep(2)
+    seen_file_keys = set()
+    
+    # Query targets both standard files and half-migrated files needing structural repair
+    for query in (f"byparr user:{OWNER}", f"trawl user:{OWNER}"):
+        page = 1
+        log(f"  Searching GitHub for code query: '{query}'...")
+        while True:
+            r = github_request("GET", "https://api.github.com/search/code", params={"q": query, "per_page": 100, "page": page})
+            batch = r.json().get("items", [])
+            for item in batch:
+                f_key = f"{item['repository']['name']}/{item['path']}"
+                if f_key not in seen_file_keys:
+                    seen_file_keys.add(f_key)
+                    results.append(item)
+            if len(batch) < 100:
+                break
+            page += 1
+            time.sleep(2)
     return results
 
 def get_file(repo, path):
