@@ -30,7 +30,6 @@ def github_request(method, url, **kwargs):
     while retries > 0:
         try:
             r = requests.request(method, url, timeout=timeout, headers=headers, **kwargs)
-            # Handle GitHub rate limiting seamlessly
             if r.status_code in (403, 429) and "X-RateLimit-Reset" in r.headers:
                 reset_time = int(r.headers.get("X-RateLimit-Reset", time.time() + 60))
                 wait = max(reset_time - time.time(), 5)
@@ -79,10 +78,17 @@ def trawl_steps(indent):
     )
 
 def patch_workflow(content):
-    # FIXED: Replaced '\s' with specific '[ \t]' to prevent catastrophic backtracking freezes on newlines
-    if re.search(r'^[ \t]+services:[ \t]*\r?\n(?:[ \t]+.*\r?\n)*?[ \t]+byparr:', content, re.MULTILINE):
-        log("    ⚠  Contains a 'services:' block — needs manual conversion")
-        
+    # FIXED: Replaced unsafe regex with a fast, linear string parser for the services block
+    in_services = False
+    for line in content.splitlines():
+        if line.strip().startswith('services:'):
+            in_services = True
+        elif in_services and line.strip() and not line.startswith(' ') and not line.startswith('\t'):
+            in_services = False
+        if in_services and 'byparr:' in line:
+            log("    ⚠  Contains a 'services:' block — needs manual conversion")
+            break
+
     lines = content.split('\n')
     result = []
     i = 0
@@ -113,15 +119,16 @@ def patch_workflow(content):
                         peek.append(nxt)
                         k += 1
                     peek_text = '\n'.join(peek)
-                    if (re.search(r'run:\s*\|?\s*\n\s*sleep\s+\d+', peek_text)
-                            and not re.search(r'docker|python|pip|git|curl|npm|node|wget', peek_text)):
+                    # FIXED: Replaced generic \s with explicit horizontal spacing [ \t] and explicit line breaks to eliminate backtracking hangs
+                    if (re.search(r'run:[ \t]*\|?[ \t]*\n(?:[ \t]*\r?\n)*[ \t]*sleep[ \t]+\d+', peek_text, re.IGNORECASE)
+                            and not re.search(r'docker|python|pip|git|curl|npm|node|wget', peek_text, re.IGNORECASE)):
                         j = k
                 i = j
                 continue
         if 'byparr' in line.lower():
             new_line = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', line)
             new_line = re.sub(r'--name\s+byparr\b', '--name trawl', new_line)
-            new_line = new_line.replace('docker logs trawl', 'docker logs trawl')
+            new_line = new_line.replace('docker logs byparr', 'docker logs trawl')
             if new_line != line:
                 line = new_line
                 changed = True
@@ -141,7 +148,7 @@ def patch_compose(content):
 def patch_other(content):
     new = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
     new = re.sub(r'--name\s+byparr\b', '--name trawl', new)
-    new = new.replace('docker logs trawl', 'docker logs trawl')
+    new = new.replace('docker logs byparr', 'docker logs trawl')
     return new, new != content
 
 def patch(content, path):
@@ -174,7 +181,7 @@ def search_files():
         if len(batch) < 100:
             break
         page += 1
-        time.sleep(2)  # Delay strictly to prevent secondary limits on search API
+        time.sleep(2)
     return results
 
 def get_file(repo, path):
@@ -225,6 +232,11 @@ for item in items:
 
     if any(path.lower().endswith(ext) for ext in SKIP_EXTENSIONS):
         log(f"  [SKIP] {key}  (doc file)")
+        continue
+
+    # FIXED: Skip the migration script file itself to protect runtime integrity
+    if "migrate_all.py" in path.lower():
+        log(f"  [SKIP] {key}  (migration script self-exclusion)")
         continue
 
     if key in seen:
