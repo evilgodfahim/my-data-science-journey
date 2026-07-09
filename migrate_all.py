@@ -4,7 +4,8 @@ import email.utils
 import requests
 from nacl import encoding, public
 
-TOKEN        = os.environ["GITHUB_TOKEN"]
+# Validation for local run execution or CI fallback
+TOKEN        = os.environ.get("GITHUB_TOKEN", "YOUR_FALLBACK_TOKEN_HERE")
 OWNER        = "evilgodfahim"
 SECRET_NAME  = "WEBSHARE_PROXY_URL"
 SECRET_VALUE = os.environ.get("WEBSHARE_PROXY_URL", "")
@@ -16,8 +17,9 @@ HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-IMAGE_RE = re.compile(r'ghcr\.io/thephaseless/byparr:[^\s\'"]+', re.IGNORECASE)
-SKIP_EXTENSIONS = {'.md', '.txt', '.rst', '.mdx'}
+BYPARR_IMAGE_RE = re.compile(r'ghcr\.io/thephaseless/byparr:[^\s\'"]+', re.IGNORECASE)
+TRAWL_IMAGE_RE  = re.compile(r'ghcr\.io/germondai/trawl:[^\s\'"]+', re.IGNORECASE)
+SKIP_EXTENSIONS  = {'.md', '.txt', '.rst', '.mdx'}
 
 def log(msg):
     print(msg, flush=True)
@@ -43,22 +45,10 @@ def github_request(method, url, **kwargs):
                 if "X-RateLimit-Reset" in r.headers:
                     reset_timestamp = int(r.headers["X-RateLimit-Reset"])
                     server_date = r.headers.get("Date")
-                    if server_date:
-                        try:
-                            server_time = email.utils.parsedate_to_datetime(server_date).timestamp()
-                        except Exception:
-                            server_time = time.time()
-                    else:
-                        server_time = time.time()
+                    server_time = email.utils.parsedate_to_datetime(server_date).timestamp() if server_date else time.time()
                     
                     wait = max(int(reset_timestamp - server_time) + 2, 5)
-                    
-                    # Raised limit to allow full automated completion over long CI windows
-                    if wait > 3600:
-                        log(f"  [API Limit] Rate limit reset window is exceptionally long ({wait}s). Exiting.")
-                        sys.exit(0)
-                        
-                    log(f"  [API Limit] Primary limit hit. Sleeping for {wait}s to fully complete migration...")
+                    log(f"  [API Limit] Primary limit hit. Sleeping for {wait}s...")
                     time.sleep(wait)
                     continue
             
@@ -71,19 +61,25 @@ def github_request(method, url, **kwargs):
             log(f"  [Network Issue] Retrying in 5s... ({str(e)})")
             time.sleep(5)
 
-def trawl_steps(indent):
+def trawl_steps(indent, include_redis=True):
     i = indent
-    return (
+    redis_part = (
         f"{i}- name: Start Redis\n"
         f"{i}  run: |\n"
-        f"{i}    docker network create trawl-net\n"
+        f"{i}    docker network create trawl-net 2>/dev/null || true\n"
+        f"{i}    docker rm -f redis 2>/dev/null || true\n"
         f"{i}    docker run -d \\\n"
         f"{i}      --name redis \\\n"
         f"{i}      --network trawl-net \\\n"
         f"{i}      redis:alpine\n"
         "\n"
+    ) if include_redis else ""
+    
+    trawl_part = (
         f"{i}- name: Start Trawl\n"
         f"{i}  run: |\n"
+        f"{i}    docker network create trawl-net 2>/dev/null || true\n"
+        f"{i}    docker rm -f trawl 2>/dev/null || true\n"
         f"{i}    docker run -d \\\n"
         f"{i}      --name trawl \\\n"
         f"{i}      --network trawl-net \\\n"
@@ -101,9 +97,10 @@ def trawl_steps(indent):
         f"{i}    done\n"
         f"{i}    docker logs trawl && exit 1"
     )
+    return redis_part + trawl_part
 
 def patch_workflow(content):
-    # Self-healing check: if it already uses trawl and contains redis, it's fully migrated
+    # If the file contains trawl AND redis already, it is fully migrated. Skip it.
     if 'trawl' in content.lower() and 'redis' in content.lower():
         return content, False
 
@@ -111,12 +108,14 @@ def patch_workflow(content):
     result = []
     i = 0
     changed = False
+    has_redis = 'redis' in content.lower()
+
     while i < len(lines):
         line = lines[i]
         
-        # Matches either old 'byparr:' or broken/half-migrated 'trawl:' blocks under services
+        # 1. Services Block Conversion
         m_svc = re.match(r'^(\s+)(byparr|trawl):\s*$', line)
-        if m_svc:
+        if m_svc and not has_redis:
             indent = m_svc.group(1)
             j = i + 1
             while j < len(lines):
@@ -143,10 +142,11 @@ def patch_workflow(content):
             )
             result.append(svc_replacement)
             changed = True
+            has_redis = True
             i = j
             continue
 
-        # Step-Level blocks
+        # 2. Step-Level Conversion Blocks
         m_step = re.match(r'^(\s+)-\s+name:', line)
         if m_step:
             indent = m_step.group(1)
@@ -159,9 +159,13 @@ def patch_workflow(content):
                 step_lines.append(nxt)
                 j += 1
             step_text = '\n'.join(step_lines)
-            if IMAGE_RE.search(step_text) or ('docker run' in step_text and 'byparr' in step_text):
-                result.append(trawl_steps(indent))
+            
+            # Match old items or half-migrated items lacking a database infrastructure step
+            if BYPARR_IMAGE_RE.search(step_text) or TRAWL_IMAGE_RE.search(step_text) or ('docker run' in step_text and ('byparr' in step_text or 'trawl' in step_text)):
+                result.append(trawl_steps(indent, include_redis=not has_redis))
                 changed = True
+                has_redis = True
+                
                 if j < len(lines) and re.match(rf'^{re.escape(indent)}-\s+name:', lines[j]):
                     peek, k = [], j
                     while k < len(lines):
@@ -177,9 +181,9 @@ def patch_workflow(content):
                 i = j
                 continue
 
-        # Dynamic string replacement for leftovers
+        # 3. Inline Name Cleanup Reference Upgrades
         if 'byparr' in line.lower():
-            new_line = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', line)
+            new_line = BYPARR_IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', line)
             new_line = re.sub(r'--name\s+byparr\b', '--name trawl', new_line, flags=re.IGNORECASE)
             new_line = new_line.replace('docker logs byparr', 'docker logs trawl')
             new_line = re.sub(r'\bbyparr\b', 'trawl', new_line, flags=re.IGNORECASE)
@@ -193,17 +197,17 @@ def patch_workflow(content):
     return '\n'.join(result), changed
 
 def patch_compose(content):
-    new = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
+    new = BYPARR_IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
     new = re.sub(r'(container_name:\s*)byparr', r'\1trawl', new, flags=re.IGNORECASE)
     new = re.sub(r'^(\s*)byparr(\s*:)', r'\1trawl\2', new, flags=re.MULTILINE | re.IGNORECASE)
     new = re.sub(r'--name\s+byparr\b', '--name trawl', new, flags=re.IGNORECASE)
     new = re.sub(r'\bbyparr\b', 'trawl', new, flags=re.IGNORECASE)
-    if new != content:
+    if new != content and 'redis' not in content.lower():
         log("    ⚠  docker-compose: updated but Redis must be added manually")
     return new, new != content
 
 def patch_other(content):
-    new = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
+    new = BYPARR_IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
     new = re.sub(r'--name\s+byparr\b', '--name trawl', new, flags=re.IGNORECASE)
     new = new.replace('docker logs byparr', 'docker logs trawl')
     new = re.sub(r'\bbyparr\b', 'trawl', new, flags=re.IGNORECASE)
@@ -233,7 +237,7 @@ def search_files():
     results, page = [], 1
     seen_file_keys = set()
     
-    # Query targets both standard files and half-migrated files needing structural repair
+    # Searches both strings to capture completely untouched and half-migrated structures
     for query in (f"byparr user:{OWNER}", f"trawl user:{OWNER}"):
         page = 1
         log(f"  Searching GitHub for code query: '{query}'...")
