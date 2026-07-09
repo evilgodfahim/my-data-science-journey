@@ -1,0 +1,23 @@
+name: Migrate Byparr to Trawl
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Install dependencies
+        run: pip install requests pynacl
+
+      - name: Run migration
+        env:
+          GITHUB_TOKEN: ${{ secrets.MIGRATION_TOKEN }}
+          WEBSHARE_PROXY_URL: ${{ secrets.WEBSHARE_PROXY_URL }}
+        run: |
+          cat << 'EOF' > migrate.py
+          # PASTE THE FULL SCRIPT HERE
+          EOF
+          python3 migrate.py --apply
