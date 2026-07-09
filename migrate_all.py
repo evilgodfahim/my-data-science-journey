@@ -124,7 +124,7 @@ def patch_workflow(content):
         if 'byparr' in line.lower():
             new_line = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', line)
             new_line = re.sub(r'--name\s+byparr\b', '--name trawl', new_line)
-            new_line = new_line.replace('docker logs byparr', 'docker logs trawl')
+            new_line = new_line.replace('docker logs trawl', 'docker logs trawl')
             if new_line != line:
                 line = new_line
                 changed = True
@@ -148,7 +148,7 @@ def patch_compose(content):
 def patch_other(content):
     new = IMAGE_RE.sub('ghcr.io/germondai/trawl:latest', content)
     new = re.sub(r'--name\s+byparr\b', '--name trawl', new)
-    new = new.replace('docker logs byparr', 'docker logs trawl')
+    new = new.replace('docker logs trawl', 'docker logs trawl')
     return new, new != content
 
 
