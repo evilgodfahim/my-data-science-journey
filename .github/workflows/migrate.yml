@@ -19,4 +19,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.MIGRATION_TOKEN }}
           WEBSHARE_PROXY_URL: ${{ secrets.WEBSHARE_PROXY_URL }}
-        run: python3 migrate_all.py --apply
+          PYTHONUNBUFFERED: "1"
+        run: python3 -u migrate_all.py --apply
