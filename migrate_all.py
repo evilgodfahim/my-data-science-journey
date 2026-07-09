@@ -21,6 +21,32 @@ SKIP_EXTENSIONS = {'.md', '.txt', '.rst', '.mdx'}
 def log(msg):
     print(msg, flush=True)
 
+def github_request(method, url, **kwargs):
+    """Wrapper to safely handle network drops, timeouts, and GitHub rate limits."""
+    timeout = kwargs.pop("timeout", 30)
+    headers = kwargs.pop("headers", HEADERS)
+    retries = 3
+    
+    while retries > 0:
+        try:
+            r = requests.request(method, url, timeout=timeout, headers=headers, **kwargs)
+            # Handle GitHub rate limiting seamlessly
+            if r.status_code in (403, 429) and "X-RateLimit-Reset" in r.headers:
+                reset_time = int(r.headers.get("X-RateLimit-Reset", time.time() + 60))
+                wait = max(reset_time - time.time(), 5)
+                log(f"  [API Limit] Rate limit hit. Waiting {wait:.0f}s before continuing...")
+                time.sleep(wait)
+                continue
+            
+            r.raise_for_status()
+            return r
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            retries -= 1
+            if retries == 0:
+                raise e
+            log(f"  [Network Issue] Retrying in 5s... ({str(e)})")
+            time.sleep(5)
+
 def trawl_steps(indent):
     i = indent
     return (
@@ -53,8 +79,10 @@ def trawl_steps(indent):
     )
 
 def patch_workflow(content):
-    if re.search(r'^\s+services:\s*\n(?:\s+.*\n)*?\s+byparr:', content, re.MULTILINE):
+    # FIXED: Replaced '\s' with specific '[ \t]' to prevent catastrophic backtracking freezes on newlines
+    if re.search(r'^[ \t]+services:[ \t]*\r?\n(?:[ \t]+.*\r?\n)*?[ \t]+byparr:', content, re.MULTILINE):
         log("    ⚠  Contains a 'services:' block — needs manual conversion")
+        
     lines = content.split('\n')
     result = []
     i = 0
@@ -128,13 +156,7 @@ def get_all_repos():
     repos, page = [], 1
     while True:
         log(f"  Fetching repo list page {page}...")
-        r = requests.get(
-            "https://api.github.com/user/repos",
-            headers=HEADERS,
-            params={"per_page": 100, "page": page, "type": "owner"},
-            timeout=30,
-        )
-        r.raise_for_status()
+        r = github_request("GET", "https://api.github.com/user/repos", params={"per_page": 100, "page": page, "type": "owner"})
         batch = r.json()
         if not batch:
             break
@@ -146,49 +168,27 @@ def search_files():
     results, page = [], 1
     while True:
         log(f"  Searching page {page}...")
-        r = requests.get(
-            "https://api.github.com/search/code",
-            headers=HEADERS,
-            params={"q": f"byparr user:{OWNER}", "per_page": 100, "page": page},
-            timeout=30,
-        )
-        if r.status_code == 403:
-            wait = max(int(r.headers.get("X-RateLimit-Reset", time.time() + 65)) - time.time(), 5)
-            log(f"  Rate limited — waiting {wait:.0f}s")
-            time.sleep(wait)
-            continue
-        r.raise_for_status()
+        r = github_request("GET", "https://api.github.com/search/code", params={"q": f"byparr user:{OWNER}", "per_page": 100, "page": page})
         batch = r.json().get("items", [])
         results.extend(batch)
         if len(batch) < 100:
             break
         page += 1
-        time.sleep(2)
+        time.sleep(2)  # Delay strictly to prevent secondary limits on search API
     return results
 
 def get_file(repo, path):
     log(f"    → reading {repo}/{path}")
-    r = requests.get(
-        f"https://api.github.com/repos/{OWNER}/{repo}/contents/{path}",
-        headers=HEADERS,
-        timeout=30,
-    )
-    r.raise_for_status()
+    r = github_request("GET", f"https://api.github.com/repos/{OWNER}/{repo}/contents/{path}")
     return r.json()
 
 def put_file(repo, path, content, sha):
     log(f"    → writing {repo}/{path}")
-    r = requests.put(
-        f"https://api.github.com/repos/{OWNER}/{repo}/contents/{path}",
-        headers=HEADERS,
-        timeout=30,
-        json={
-            "message": "chore: replace Byparr with Trawl",
-            "content": base64.b64encode(content.encode()).decode(),
-            "sha": sha,
-        },
-    )
-    r.raise_for_status()
+    github_request("PUT", f"https://api.github.com/repos/{OWNER}/{repo}/contents/{path}", json={
+        "message": "chore: replace Byparr with Trawl",
+        "content": base64.b64encode(content.encode()).decode(),
+        "sha": sha,
+    })
 
 def encrypt_secret(public_key_b64, secret):
     pk  = public.PublicKey(public_key_b64.encode(), encoding.Base64Encoder())
@@ -197,22 +197,15 @@ def encrypt_secret(public_key_b64, secret):
 
 def set_secret(repo):
     log(f"  → getting public key for {repo}")
-    r = requests.get(
-        f"https://api.github.com/repos/{OWNER}/{repo}/actions/secrets/public-key",
-        headers=HEADERS,
-        timeout=30,
-    )
-    r.raise_for_status()
-    key_data  = r.json()
+    r = github_request("GET", f"https://api.github.com/repos/{OWNER}/{repo}/actions/secrets/public-key")
+    key_data = r.json()
     encrypted = encrypt_secret(key_data["key"], SECRET_VALUE)
+    
     log(f"  → setting secret for {repo}")
-    r = requests.put(
-        f"https://api.github.com/repos/{OWNER}/{repo}/actions/secrets/{SECRET_NAME}",
-        headers=HEADERS,
-        timeout=30,
-        json={"encrypted_value": encrypted, "key_id": key_data["key_id"]},
-    )
-    r.raise_for_status()
+    github_request("PUT", f"https://api.github.com/repos/{OWNER}/{repo}/actions/secrets/{SECRET_NAME}", json={
+        "encrypted_value": encrypted, 
+        "key_id": key_data["key_id"]
+    })
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -255,9 +248,6 @@ for item in items:
             updated.append(key)
 
         time.sleep(0.5)
-    except requests.exceptions.Timeout:
-        log(f"  [TIMEOUT] {key} — skipping")
-        failed.append(key)
     except Exception as e:
         log(f"  [✗] {key}: {e}")
         failed.append(key)
@@ -277,11 +267,8 @@ for repo in all_repos:
             set_secret(repo)
         log(f"  {'[WOULD SET]' if DRY_RUN else '[✓]'} {repo}")
         s_ok.append(repo)
-    except requests.exceptions.Timeout:
-        log(f"  [TIMEOUT] {repo} — skipping")
-        s_fail.append(repo)
     except Exception as e:
-        log(f"  [✗] {repo}: {e}")
+        log(f"   [✗] {repo}: {e}")
         s_fail.append(repo)
     time.sleep(0.3)
 
