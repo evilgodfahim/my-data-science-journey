@@ -1,4 +1,4 @@
-name: Migrate Byparr to Trawl
+name: Migrate trawl to Trawl
 
 on:
   workflow_dispatch:
